@@ -6,22 +6,172 @@ const util = require('util');
 const callbackify = require('./lib/callbackify');
 const safeCall = require('./lib/safeCall');
 
-let homebrideAPI, Service, Characteristic;
+let Service, Characteristic, Accessory, UUIDGen;
 
-const PLUGIN_NAME = 'homebridge-xiaomi-roborock-vacuum';
-const ACCESSORY_NAME = 'XiaomiRoborockVacuum';
+const PLUGIN_NAME = 'homebridge-xiaomi-roborock-vacuum-platform';
+const ACCESSORY_NAME = 'XiaomiRoborockVacuumPlatform';
 
 const MODELS = require('./models');
 const GET_STATE_INTERVAL_MS = 30000; // 30s
 
 module.exports = function (homebridge) {
-  // Accessory = homebridge.platformAccessory;
+  Accessory = homebridge.platformAccessory;
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
-  homebrideAPI = homebridge;
-  // UUIDGen = homebridge.hap.uuid;
+  UUIDGen = homebridge.hap.uuid;
 
-  homebridge.registerAccessory(PLUGIN_NAME, ACCESSORY_NAME, XiaomiRoborockVacuum);
+  homebridge.registerPlatform(PLUGIN_NAME, ACCESSORY_NAME, XiaomiRoborockVacuumPlatform, true);
+}
+
+function XiaomiRoborockVacuumPlatform(log, config, api) {
+  var platform = this;
+  this.log = log;
+  this.config = config;
+  this.config.name = config.name || 'Roborock vacuum cleaner';
+  this.accessories = {};
+
+  if (api) {
+      this.api = api;
+      this.api.on('didFinishLaunching', this.didFinishLaunching.bind(this));
+  }
+
+  this.robo = new XiaomiRoborockVacuum(log, config, this);
+}
+
+XiaomiRoborockVacuumPlatform.prototype.didFinishLaunching = function () {
+  // Add or update accessories defined in config.json
+  this.addMainAccessory();
+
+  if(!this.config.autoroom)
+    for (var i in this.config.rooms) this.addAccessory(this.config.rooms[i]);
+
+  // Remove extra accessories in cache
+  for (var name in this.accessories) {
+    var accessory = this.accessories[name];
+    if (!accessory.reachable) this.removeAccessory(accessory);
+  }
+}
+
+XiaomiRoborockVacuumPlatform.prototype.configureAccessory = function (accessory) {
+  this.setService(accessory);
+  this.accessories[accessory.context.name] = accessory;
+}
+
+XiaomiRoborockVacuumPlatform.prototype.setService = function (accessory) {
+  
+}
+
+XiaomiRoborockVacuumPlatform.prototype.updateInfo = function(service, type, value) {
+  for(var i in this.accessories[this.config.name].services) {
+    if(this.accessories[this.config.name].services[i] == service)
+      this.accessories[this.config.name].services[i].setCharacteristic(type, value);
+  }
+}
+
+XiaomiRoborockVacuumPlatform.prototype.configurationRequestHandler = function(context, request, callback) {
+  this.log("Context: ", JSON.stringify(context));
+  this.log("Request: ", JSON.stringify(request));
+}
+
+XiaomiRoborockVacuumPlatform.prototype.addMainAccessory = function() {
+  var name = this.config.name;
+  this.log("Initializing platform accessory '" + name + "'...");
+  // Retrieve accessory from cache
+  var accessory = this.accessories[name];
+
+  var services = this.robo.getServices();
+
+  if (!accessory) {
+    // Setup accessory as SWITCH (8) category.
+    var uuid = UUIDGen.generate(name);
+    accessory = new Accessory(name, uuid, 8);
+
+    // Setup HomeKit switch service
+    for(var service in services) {
+      accessory.addService(services[service]);
+    }
+
+    // New accessory is always reachable
+    accessory.reachable = true;
+
+    // Setup listeners for different switch events
+    this.setService(accessory);
+
+    // Register new accessory in HomeKit
+    this.api.registerPlatformAccessories(PLUGIN_NAME, ACCESSORY_NAME, [accessory]);
+
+    // Store accessory in cache
+    this.accessories[name] = accessory;
+  }
+
+  accessory.updateReachability(true);
+
+  var cache = accessory.context;
+  cache.name = name;
+}
+
+XiaomiRoborockVacuumPlatform.prototype.addRoomAccessory = function(roomId, roomName, roomService) {
+  this.log("Initializing platform accessory '" + roomName + "'...");
+  // Retrieve accessory from cache
+  var accessory = this.accessories[roomName];
+
+  if (!accessory) {
+    // Setup accessory as SWITCH (8) category.
+    var uuid = UUIDGen.generate(roomName);
+    accessory = new Accessory(roomName, uuid, 3);
+
+    // Setup HomeKit switch service
+    accessory.addService(roomService);
+
+    // New accessory is always reachable
+    accessory.reachable = true;
+
+    // Setup listeners for different switch events
+    this.setService(accessory);
+
+    // Register new accessory in HomeKit
+    this.api.registerPlatformAccessories(PLUGIN_NAME, ACCESSORY_NAME, [accessory]);
+
+    // Store accessory in cache
+    this.accessories[roomName] = accessory;
+  }
+
+  accessory.updateReachability(true);
+
+  var cache = accessory.context;
+  cache.name   = roomName;
+  cache.roomId = roomId;
+}
+
+XiaomiRoborockVacuumPlatform.prototype.addAccessory = function(data) {
+  
+}
+
+XiaomiRoborockVacuumPlatform.prototype.removeAccessory = function (accessory) {
+  if (accessory) {
+    var name = accessory.context.name;
+    this.log(name + " is removed from HomeBridge.");
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, ACCESSORY_NAME, [accessory]);
+    delete this.accessories[name];
+  }
+}
+
+XiaomiRoborockVacuumPlatform.prototype.updateAccessoriesReachability = function() {
+  this.log("Update Reachability");
+  for (var index in this.accessories) {
+    var accessory = this.accessories[index];
+    //accessory.updateReachability(false);
+  }
+}
+
+XiaomiRoborockVacuumPlatform.prototype.getInitState = function (accessory) {
+  // Configured accessory is reachable
+  accessory.updateReachability(true);
+}
+
+XiaomiRoborockVacuumPlatform.prototype.identify = function (thisSwitch, paired, callback) {
+  this.log(thisSwitch.name + " identify requested!");
+  callback();
 }
 
 class XiaomiRoborockVacuum {
@@ -62,7 +212,8 @@ class XiaomiRoborockVacuum {
     };
   }
 
-  constructor(log, config) {
+  constructor(log, config, platform) {
+    this.platform = platform;
     this.log = log;
     this.config = config;
     this.config.name = config.name || 'Roborock vacuum cleaner';
@@ -94,6 +245,7 @@ class XiaomiRoborockVacuum {
   }
 
   initialiseServices() {
+    /*
     this.services.info = new Service.AccessoryInformation();
     this.services.info
       .setCharacteristic(Characteristic.Manufacturer, 'Xiaomi')
@@ -107,8 +259,8 @@ class XiaomiRoborockVacuum {
     this.services.info
       .getCharacteristic(Characteristic.SerialNumber)
       .on('get', (cb) => callbackify(() => this.getSerialNumber(), cb));
-
-    this.services.fan = new Service.Fan(this.config.name, 'Speed');
+  */
+    this.services.fan = new Service.Fan(this.config.cleanword, 'Speed');
     this.services.fan
       .getCharacteristic(Characteristic.On)
       .on('get', (cb) => callbackify(() => this.getCleaning(), cb))
@@ -157,15 +309,17 @@ class XiaomiRoborockVacuum {
         .on('get', (cb) => callbackify(() => this.getDocked(), cb));
     }
 
+    
     if (this.config.autoroom) {
       this.getRoomMap();
     }
-
+    /*
     if (this.config.rooms && !this.config.autoroom) {
-      for(var i in this.config.rooms) {
+      for(var i = 0; i < this.config.rooms.length; i++) {
         this.createRoom(this.config.rooms[i].id, this.config.rooms[i].name);
       }
     }
+    */
 
     // ADDITIONAL HOMEKIT SERVICES
     this.initialiseCareServices();
@@ -343,7 +497,10 @@ class XiaomiRoborockVacuum {
       this.device = device;
 
       this.model = this.device.miioModel;
-      this.services.info.setCharacteristic(Characteristic.Model, this.model);
+      //this.services.info.setCharacteristic(Characteristic.Model, this.model);
+      this.platform.updateInfo(undefined, Characteristic.Manufacturer, 'Xiaomi')
+      this.platform.updateInfo(undefined, Characteristic.Model, 'Roborock');
+      this.platform.updateInfo(undefined, Characteristic.Model, this.model);
 
       this.log.info('STA getDevice | Connected to: %s', this.config.ip);
       this.log.info('STA getDevice | Model: ' + this.device.miioModel);
@@ -353,7 +510,8 @@ class XiaomiRoborockVacuum {
 
       try {
         const serial = await this.getSerialNumber();
-        this.services.info.setCharacteristic(Characteristic.SerialNumber, `${serial}`);
+        //this.services.info.setCharacteristic(Characteristic.SerialNumber, `${serial}`);
+        this.platform.updateInfo(undefined, Characteristic.SerialNumber, `${serial}`);
         this.log.info(`STA getDevice | Serialnumber: ${serial}`);
       } catch (err) {
         this.log.error(`ERR getDevice | get_serial_number | ${err}`);
@@ -362,7 +520,8 @@ class XiaomiRoborockVacuum {
       try {
         const firmware = await this.getFirmware();
         this.firmware = firmware;
-        this.services.info.setCharacteristic(Characteristic.FirmwareRevision, `${firmware}`);
+        //this.services.info.setCharacteristic(Characteristic.FirmwareRevision, `${firmware}`);
+        this.platform.updateInfo(undefined, Characteristic.FirmwareRevision, `${firmware}`);
         this.log.info(`STA getDevice | Firmwareversion: ${firmware}`);
       } catch (err) {
         this.log.error(`ERR getDevice | miIO.info | ${err}`);
@@ -515,7 +674,7 @@ class XiaomiRoborockVacuum {
         await this.device.activateCleaning();
       } else if (!state) { // Stop cleaning
         this.log.info(`ACT setCleaning | ${this.model} | Stop cleaning and go to charge.`);
-        await this.activateCharging(); // Charging works for 1st, not for 2nd
+        await this.device.activateCharging(); // Charging works for 1st, not for 2nd
       }
     } catch (err) {
       this.log.error(`ERR setCleaning | ${this.model} | Failed to set cleaning to ${state}`, err);
@@ -524,6 +683,8 @@ class XiaomiRoborockVacuum {
   }
 
   async setCleaningRoom(state, room) {
+    console.log("Room cleaning", room);
+    /*
     await this.ensureDevice('setCleaning');
 
     try {
@@ -532,21 +693,13 @@ class XiaomiRoborockVacuum {
         await this.device.call('app_segment_clean', [room]);
       } else if (!state) { // Stop cleaning
         this.log.info(`ACT setCleaning | ${this.model} | Stop cleaning and go to charge.`);
-        await this.activateCharging();
+        await this.device.activateCharging(); // Charging works for 1st, not for 2nd
       }
     } catch (err) {
       this.log.error(`ERR setCleaning | ${this.model} | Failed to set cleaning to ${state}`, err);
       throw err;
     }
-  }
-
-  async activateCharging() {
-    await this.ensureDevice('activateCharging');
-    try {
-      await this.device.call('app_charge');
-    } catch (err) {
-      this.device.call('app_charge');
-    }
+    */
   }
 
   async getRoomMap() {
@@ -565,8 +718,7 @@ class XiaomiRoborockVacuum {
   }
 
   createRoom(roomId, roomName) {
-    this.log.info(`INF createRoom | ${this.model} | Room ${roomName} (${roomId})`);
-    this.services[roomName] = new Service.Switch(`${this.config.cleanword} ${roomName}`,'roomService' + roomId);
+    this.services[roomName] = new Service.Fan(`${this.config.cleanword} ${roomName}`,'roomService' + roomId);
     this.services[roomName].roomId = roomId;
     this.services[roomName].parent = this;
     this.services[roomName]
@@ -579,6 +731,13 @@ class XiaomiRoborockVacuum {
     .on('change', (oldState, newState) => {
       this.changedPause(newState);
     });
+
+    this.services[roomName]
+    .getCharacteristic(Characteristic.RotationSpeed)
+    .on('get', (cb) => callbackify(() => this.getSpeed(), cb))
+    .on('set', (newState, cb) => callbackify(() => this.setSpeed(newState), cb));
+
+    this.platform.addRoomAccessory(roomId, roomName, this.services[roomName]);
   }
 
   findSpeedModes() {
@@ -798,6 +957,7 @@ class XiaomiRoborockVacuum {
 
   getServices() {
     this.log.debug(`DEB getServices | ${this.model}`);
+    //this.Sleep(2000);
     return Object.keys(this.services).map((key) => this.services[key]);
   }
 
